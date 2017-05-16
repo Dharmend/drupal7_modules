@@ -1,0 +1,300 @@
+<?php
+
+/**
+ * @file
+ * The ITG API module.
+ *
+ * Contains functionality related to Third Party API.
+ *
+ */
+
+/**
+ * Implements hook_cronapi().
+ * {@inheritdoc}
+ */
+function itg_api_cronapi($op, $job = NULL) {
+  
+  $items['itg-pti-content'] = array(
+    'description' => 'Import PTI Feed.',
+    'callback' => 'itg_pti_content',
+    'file' => 'include/itg_api_pti.inc',
+  );
+  
+  $items['itg-mail-today-content'] = array(
+    'description' => 'Import Mail today Feed',
+    'callback' => 'itg_api_mail_today_content',
+    'file' => 'include/itg_api_mail_today.inc',
+  );
+  
+  $items['itg-ani-content'] = array(
+    'description' => 'Import ANI Feed',
+    'callback' => 'itg_ani_content',
+    'file' => 'include/itg_api_ani.inc',
+  );
+  
+  $items['itg-ians-content'] = array(
+    'description' => 'Import Ians Feed',
+    'callback' => 'itg_ians_content',
+    'file' => 'include/itg_api_ians.inc',
+  );
+  
+  $items['itg-ap-content'] = array(
+    'description' => 'Import Ap Feed',
+    'callback' => 'itg_ap_content',
+    'file' => 'include/itg_api_ap.inc',
+  );
+  
+  $items['itg-reuters-content'] = array(
+    'description' => 'Import Reuters Feed',
+    'callback' => 'itg_reuters_content',
+    'file' => 'include/itg_api_reuters.inc',
+  );
+  
+  $items['itg-nifty-feed'] = array(
+    'description' => 'Import Nifty Feed',
+    'callback' => 'itg_nifty_feed',
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission.
+ *
+ * {@inheritdoc}
+ */
+function itg_api_permission() {
+  return array(
+    'access Api content' => array(
+      'title' => t('API permission'),
+      'description' => t('API permission.'),
+    ),
+  );
+}
+
+/**
+ * Returns the key which represents the live revision.
+ *
+ * @TODO: make this configurable.
+ */
+function workbench_moderation_state_review() {
+  return 'needs_review';
+}
+
+/**
+ * Implement itg_nifty_feed
+ */
+function itg_nifty_feed() {
+  $direc = getcwd() . '/sites/all/modules/custom/itg_api/feeds/nifty/';
+  $new_file_name = $direc . 'SensexNiftyFeed.txt';
+  $response_xml_data = get_content_from_xml_loc('http://businesstoday.accordhostings.com/SensexNiftyFeed.aspx');
+
+  if ($response_xml_data) {
+    $nifty_xml = simplexml_load_string($response_xml_data);
+    $final_output = '';
+    foreach ($nifty_xml as $nifty_value) {
+      $final_output .= $nifty_name = $nifty_value->name . ',';
+      $final_output .= 'Current Value : ' . $current_value = $nifty_value->current_value . ',';
+      $final_output .= 'Value Change : ' . $value_change = $nifty_value->value_change . ',';
+      $final_output .= 'Percentage Change : ' . $percentage_change = $nifty_value->percentage_change . '@';
+    }
+    unlink($new_file_name);
+    if (!file_exists($new_file_name)) {
+      $file = fopen($new_file_name, "w+");
+      fwrite($file, $final_output);
+      fclose($file);
+      chmod($file, 777);
+    }
+  }
+  print 'Saved Successfully';
+}
+
+/**
+ * Implements function for node exit or not
+ * @param string $title
+ * @return bool
+ */
+
+function itg_api_check_title($title) {
+  $title = html_entity_decode($title);
+  $result = db_select('node', 'node')
+    ->fields('node', array('title'))
+    ->condition('title', $title, '=')
+    ->condition('type', 'story', '=')
+    ->execute()->fetchAssoc();
+
+  if (!empty($result['title'])) {
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+/**
+ * Implements function for getting node id
+ * @param string $title
+ * @param string $type
+ * @return int
+ */
+function itg_api_get_nid($title, $type) {
+  $result = db_query("SELECT n.nid FROM {node} n WHERE n.title = :title AND n.type = :type", array(":title" => $title, ":type" => $type));
+  $nid = $result->fetchField();
+
+  return $nid;
+}
+
+/**
+ * Implements function for getting term id by name
+ * @param string $name
+ * @return int
+ */
+function itg_api_get_term_id($name, $vid) {
+  $result = db_query("SELECT t.tid FROM {taxonomy_term_data} t WHERE t.name = :name AND t.vid = :vid", array(":name" => $name, ":vid" => $vid));
+  $tid = $result->fetchField();
+
+  return $tid;
+}
+
+/**
+ * Implements function for save xml file info in table (itg_api_xml_info)
+ * @param int $nid
+ * @param string $file
+ * @param string $type
+ * @param string $source
+ */
+function itg_api_insert_xml_info($nid, $file, $type, $source) {
+  global $user;
+  $created = date('Y-m-d H:i:s');
+  db_insert('itg_api_xml_info')// Table to store file and node info
+  ->fields(array(
+    'nid' => $nid,
+    'uid' => $user->uid,
+    'filename' => $file,
+    'type' => $type,
+    'source' => $source,
+    'created' => $created
+  ))
+    ->execute();
+}
+
+/**
+ * Implements function for check file info in table (itg_api_xml_info)
+  * @param string $filename
+ */
+function itg_api_get_xml_info($filename) {
+  $result = db_query("SELECT t.id FROM {itg_api_xml_info} t WHERE t.filename = :name", array(":name" => $filename));
+  $id = $result->fetchField();
+  return $id;
+}
+
+/**
+ * Implements function for get all files from directory
+ * @param string $dir
+ * @param array $results
+ *
+ * @return array
+ */
+
+function get_dir_content($dir, &$results = array()) {
+  $files = scandir($dir);
+
+  foreach ($files as $key => $value) {
+    $path = realpath($dir . DIRECTORY_SEPARATOR . $value);
+    if (!is_dir($path)) {
+      $results[] = $path;
+    }
+    elseif ($value != "." && $value != "..") {
+      get_dir_content($path, $results);
+      $results[] = $path;
+    }
+  }
+
+  return $results;
+}
+
+/**
+ * Implements hook_block_info().
+ *
+ * {@inheritdoc}
+ */
+function itg_api_block_info() {
+  $blocks['api_form_block'] = array(
+    'info' => t('APi Form  Block'),
+    'cache' => DRUPAL_CACHE_GLOBAL,
+  );
+
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ *
+ * @param string $delta
+ * @return array
+ */
+function itg_api_block_view($delta = '') {
+  $block = array();
+  switch ($delta) {
+    case 'api_form_block':
+      $block['content'] = theme('api_form_display_block', array('data' => ''));
+      break;
+  }
+
+  return $block;
+}
+
+
+/**
+ * Implements hook_theme()
+ *
+ * {@inheritdoc}
+ */
+function itg_api_theme($existing, $type, $theme, $path) {
+  $themes = array(
+    'api_form_display_block' => array(
+      'template' => 'api-form-template',
+      'path' => drupal_get_path('module', 'itg_api') . '/templates',
+      'variables' => array('data' => NULL),
+    ),
+
+  );
+
+  return $themes;
+}
+
+/**
+ * Get html data from url using curl.
+ * @param string $url
+ * @return string
+ */
+function get_content_from_xml_loc($url) {
+  $ch = curl_init();
+  curl_setopt($ch, CURLOPT_AUTOREFERER, TRUE);
+  curl_setopt($ch, CURLOPT_HEADER, 0);
+  curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+  curl_setopt($ch, CURLOPT_URL, $url);
+  curl_setopt($ch, CURLOPT_FOLLOWLOCATION, TRUE);
+  $data = curl_exec($ch);
+  curl_close($ch);
+  return $data;
+}
+
+/**
+ * Implemets itg_custom_byline_create.
+ * @param string $uniqueid
+ * @param int $bylineid
+ */
+function itg_custom_byline_create($uniqueid = NULL, $bylineid) {
+  if (!empty($bylineid))
+  {
+    $qry = db_insert('itg_multi_byline_info')
+        ->fields(array(
+          'byline_id' => $bylineid,
+          'uniqueid' => $uniqueid,
+          'publish_status' => 1,
+          'byline_weight' => 0,
+          'created' => REQUEST_TIME
+        ))
+        ->execute();
+  }
+}

@@ -1,0 +1,507 @@
+<?php
+
+/**
+ * @file
+ * The ITG Related Content module.
+ *
+ * Contains functionality for Related Content.
+ *
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function itg_related_menu() {
+  $items = array();
+
+  $items['ajaxcallback'] = array(
+    'title' => 'Test form',
+    'page callback' => 'my_custom_ajax_callback',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['tag-list/%/autocomplete'] = array(
+    'page callback' => 'itg_get_tag',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+  
+  $items['twitter-handle/autocomplete'] = array(
+    'page callback' => 'itg_get_twitter_list',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implement hook_form_alter
+ * {@inheritdoc}
+ */
+function itg_related_form_alter(&$form, &$form_state, $form_id) {
+
+  if ($form_id == 'story_node_form') {
+
+    $type = $form['type']['#value'];
+
+    $form['ntype'] = array(
+      '#title' => t('Ntype'),
+      '#type' => 'hidden',
+      '#id' => 'ntype',
+      '#description' => t(''),
+      '#value' => $type,
+    );
+  }
+
+  // get form'ids
+  $form_id_arr = array('story_node_form', 'breaking_news_node_form', 'blog_node_form', 'videogallery_node_form', 'photogallery_node_form', 'survey_node_form');
+ 
+  // condition for related content read only field
+  if (in_array($form_id, $form_id_arr)) {
+    $form['field_common_related_content'][LANGUAGE_NONE][0]['value']['#attributes']['readonly'] = 'readonly';
+  }
+
+
+  if ($form_id == 'views_exposed_form' && $form_state['view']->name == 'related_content_new') {
+    
+   if (function_exists('itg_apache_solr_get_site_hash'))
+    {
+      $hash = itg_apache_solr_get_site_hash();
+    }
+    
+    $form['keyword']['#attributes'] = array('placeholder' => array(t('Title / Kicker / Tag ')));
+
+    $bundle_name = array('story' => 'Story', 'blog' => 'Blog', 'photogallery' => 'Photogallery', 'videogallery' => 'Videogallery', 'podcast' => 'Podcast', 'breaking_news' => 'Live Blog');
+    $form['bundle']['#type'] = 'select';
+    $form['bundle']['#options'] = $bundle_name;
+    $form['bundle']['#size'] = 5;
+    $form['bundle']['#multiple'] = TRUE;
+
+    $form['hash']['#type'] = 'select';
+    $form['hash']['#options'] = $hash;
+    $form['hash']['#size'] = 5;
+    $form['hash']['#multiple'] = TRUE;
+
+
+    $related_status = array('1' => 'Published', 'Unpublished' => 'Unpublished');
+    $form['bs_status']['#type'] = 'select';
+    $form['bs_status']['#options'] = $related_status;
+    $form['bs_status']['#size'] = 2;
+    $form['bs_status']['#multiple'] = TRUE;
+  }
+}
+
+/**
+ * Implement my_custom_ajax_callback
+ */
+function my_custom_ajax_callback() {
+
+  $combined_data = array('label' => $_POST['title'], 'bundle_name' => trim($_POST['bundle_name']), 'im_vid_4' => $_POST['section_id'], 'hash' => $_POST['hash']);
+  //$output = serialize($combined_data);
+  $check_title = check_search_title(trim($_POST['search_name']));
+
+  if ($check_title) {
+    $result = update_search_title(trim($_POST['search_name']), $_POST['dta'], $_POST['uid'], $_POST['ntype']);
+  }
+  else {
+    $result = db_insert('itg_related_search')
+        ->fields(array('search_title', 'search_path', 'ntype', 'uid', 'created', 'changed'))
+        ->values(array($_POST['search_name'], $_POST['dta'], $_POST['ntype'], $_POST['uid'], REQUEST_TIME, REQUEST_TIME))
+        ->execute();
+    $final_link = str_replace("&width=900&height=700&iframe=true", "", $_POST['dta']);
+    $final_with_title = $final_link . '&sname=' . $_POST['search_name'];
+    $related_res = '<li><a class= "def-cur-pointer" onclick="showrelatedpopup(' . "'" . $final_with_title . "'" . ')">' . $_POST['search_name'] . '</a></li>';
+  }
+
+
+  if ($result !== FALSE) {
+    $response = array('msg' => 'success', 'lnk' => $related_res);
+    print json_encode($response);
+  }
+}
+
+/**
+ * Implement hook_views_pre_render
+ * @param Array $view
+ */
+function itg_related_views_pre_render(&$view) {
+
+  if ($view->name == "related_content_new") {
+    global $user, $base_url;
+
+    $settings = array();
+    $settings['base_url'] = $base_url;
+    $settings['uid'] = $user->uid;
+    $settings['solr'] = variable_get('solr_url_config');
+    drupal_add_js(array('itg_related' => array('settings' => $settings)), array('type' => 'setting'));
+    drupal_add_js(drupal_get_path('module', 'itg_related') . '/js/itg_related.js', array('weight' => 1));
+    $titlename = '';
+    if(!empty($_GET['sname'])) {
+    $titlename = t('Search Name : ');
+    $sname = '<span class="sname">'.$titlename. $_GET['sname'] . '&nbsp;</span>';
+    $view->attachment_before = $sname;
+    }
+    // get solr site hash
+    if (function_exists('itg_apache_solr_get_site_hash'))
+    {
+      $hash = itg_apache_solr_get_site_hash();
+    }
+    
+    foreach ($view->result as $related_result) {
+      if ($related_result->bs_status == '1') {
+        $related_result->bs_status = 'Published';
+      }
+     
+      $key = $related_result->hash;
+      $related_result->site = $hash[$key];
+
+      $related_result->sm_vid_Tags = implode(', ', $related_result->sm_vid_Tags);
+      $related_result->sm_vid_Category_Management = implode(', ', $related_result->sm_vid_Category_Management);
+    }
+  }
+}
+
+/**
+ * Implements hook_form_views_exposed_form_alter()
+ *
+ * {@inheritdoc}
+ */
+function itg_related_form_views_exposed_form_alter(&$form, &$form_state, $form_id) {
+
+  //Get the Form Id
+  if ($form["#id"] == 'views-exposed-form-related-content-new-page') {
+    $form['sm_vid_Tags']['#autocomplete_path'] = 'tag-list/1/autocomplete';
+    $form['tm_vid_4_names']['#autocomplete_path'] = 'tag-list/'.CATEGORY_MANAGMENT.'/autocomplete';
+    $form['tm_vid_14_names']['#autocomplete_path'] = 'tag-list/'.CATEGORY_MANAGMENT.'/autocomplete';
+    $form['sm_field_itg_common_by_line_name']['#autocomplete_path'] = 'reporter-list/autocomplete';
+    $form['sm_field_itg_common_by_line_twit']['#autocomplete_path'] = 'twitter-handle/autocomplete';
+  }
+}
+
+/**
+ * @param string $title
+ * @return string
+ */
+function check_search_title($title) {
+  $query = db_select('itg_related_search', 'fn')
+      ->fields('fn', array('search_title'))
+      ->condition('fn.search_title', $title, '=');
+
+  return $query->execute()->fetchField();
+}
+
+/**
+ * update search title if exist
+ * @param string $title,$combined_data
+ * @param int $uid 
+ */
+function update_search_title($title, $combined_data, $uid, $type) {
+  db_update('itg_related_search') // Table name no longer needs {}
+      ->fields(array(
+        'search_title' => $title,
+        'search_path' => $combined_data,
+        'ntype' => $type,
+        'changed' => REQUEST_TIME,
+        'uid' => $uid,
+      ))
+      ->condition('search_title', $title, '=')
+      ->execute();
+}
+
+/**
+ * Implement hook_apachesolr_query_alter
+ * {@inheritdoc}
+ */
+function itg_related_apachesolr_query_alter(DrupalSolrQueryInterface $query) {
+
+  $page_condition = array('related-content', 'topic', 'searchimage', 'online-archive-story', 'clone-story', 'search-unpublish-video', 'search-unpublish-video-radio', 'search-publish-video', 'search-publish-video-radio');
+
+  if (in_array(arg(0), $page_condition)) {
+    $i = 1;
+    foreach ($_GET as $key => $val) {
+
+      if ($i > 1) {
+        $and = ' AND ';
+      }
+      $remove_key = array('related-content', 'page', 'width', 'height', 'iframe', 'type', 'items_per_page', 'keyword', 'topic', 'ds_changed_max', 'custom_drp', 'exact_match', 'searchimage', 'online-archive-story', 'clone-story', 'sname', 'search-unpublish-video', 'search-unpublish-video-radio', 'search-publish-video', 'search-publish-video-radio');
+
+      if (!empty($val) && $val != 'related-content' && $val != 'topic' && $val != 'searchimage' && $val != 'online-archive-story' && $val != 'clone-story' && $val != 'search-unpublish-video' && $val != 'search-unpublish-video-radio' && $val != 'search-publish-video' && $val != 'search-publish-video-radio' && !in_array($key, $remove_key)) {
+
+        if (is_array($val)) {
+
+          // condition if array is not empty and date field selected
+          if ($key == 'ds_changed' && $_GET['custom_drp'] != '_none') {
+            // && array_filter($_GET['ds_changed'])
+            // all values are empty (where "empty" means == false)
+            if ($_GET['custom_drp'] == 'calender') {
+              $min_date = implode(" ", $_GET['ds_changed']);
+              $max_date = implode(" ", $_GET['ds_changed_max']);
+
+              // if min date is blank
+              if (empty($min_date)) {
+                $min_date = date('Y-m-d');
+              }
+
+              //condition if user not select max date
+              if (!empty($max_date)) {
+                $val_str = '[' . $min_date . 'T00:00:00Z/DAY TO ' . $max_date . 'T00:00:00Z/DAY+1DAY]';
+              }
+              else {
+                $val_str = '[' . $min_date . 'T00:00:00Z/DAY TO ' . $min_date . 'T00:00:00Z/DAY+1DAY]';
+              }
+            }
+            else if ($_GET['custom_drp'] != 'calender' && $_GET['custom_drp'] != '_none') {
+              /* condition for online archive story calender */
+              $online_archive_story_min_date = implode(" ", $_GET['ds_changed']);
+              if (!empty($online_archive_story_min_date)) {
+
+                $val_str = '[' . $online_archive_story_min_date . 'T00:00:00Z/DAY TO ' . $online_archive_story_min_date . 'T00:00:00Z/DAY+1DAY]';
+              }
+              else {
+                $val_str = '[' . $_GET['custom_drp'] . 'T00:00:00Z/DAY TO ' . date('Y-m-d') . 'T00:00:00Z/DAY+1DAY]';
+              }
+            }
+          }
+          else {
+            $val_str = implode(' OR ', $val);
+            if ($val_str == 'All') {
+              $bundle_name = array('Story', 'Blog', 'photogallery', 'Videogallery', 'Podcast', 'Magazine');
+              $val_str = implode(' OR ', $bundle_name);
+            }
+            else {
+              $val_str = implode(' OR ', $val);
+            }
+          }
+        }
+        else {
+          if ($key == 'label' || $key == 'sm_field_story_kicker_text') {
+            $val_str = trim($val) . '*';
+            $val_str = str_replace(" ", "* OR ", $val_str);
+          }
+          else if ($key == 'sm_vid_Tags') {
+            $get_value = preg_split('/[\s,]/', $val);
+            $get_value = array_filter($get_value);
+            $get_comma_value = implode(',', $get_value);
+            $val_str = str_replace(",", "* OR ", $get_comma_value);
+
+            $val_str = $val_str . '*';
+          }
+          else if ($key == 'tm_vid_4_names' && $_GET['q'] != 'searchimage') {
+            $get_value = preg_split('/[\s,]/', $val);
+            $get_value = array_filter($get_value);
+            $get_comma_value = implode(',', $get_value);
+            $val_str = str_replace(",", " OR ", $get_comma_value);
+          }
+          else if ($key == 'sm_field_itg_common_by_line_name' || $key == 'sm_alttext' || $key == 'sm_image_title' || $key == 'sm_field_itg_common_by_line_twit') {
+            $quotes_string = '"' . $val . '"';
+            $val_str = $quotes_string;
+          }
+          else {
+            $val_str = $val;
+          }
+        }
+
+        if (!empty($val_str)) {
+          $str .= $and . $key . ':(' . $val_str . ')';
+        }
+
+        $i++;
+      }
+      elseif (empty($_GET['bundle_name']) && $_GET['q'] == 'online-archive-story') {
+        $search_array = $query->getSolrParams();
+        $dat_1_day_ago = date('Y-m-d', strtotime('-1 days'));
+        $val_str = '[' . $dat_1_day_ago . 'T00:00:00Z/DAY TO ' . $dat_1_day_ago . 'T00:00:00Z/DAY+1DAY]';
+        $request_url_array = explode('/', $_SERVER['REQUEST_URI']);
+        if (is_array($request_url_array) && count($request_url_array) > 0) {
+          if (in_array('dev', $request_url_array)) {
+            $hash = '5fyeg7';
+          }
+          elseif (in_array('qa', $request_url_array)) {
+            $hash = '2e1u4m';
+          }
+          elseif (in_array('stage', $request_url_array)) {
+            $hash = 'e49it8';
+          }
+          else {
+            $hash = '2e1u4m';
+          }
+        }
+        $str = 'bundle_name:(Story) AND ';
+        $str .= 'hash:(' . $hash . ') AND ';
+        $str .= 'ds_changed:(' . $val_str . ')';
+        $query->replaceParam("fq", '(' . $str . ')');
+      }
+    }
+
+
+
+    if ($_GET['q'] == 'topic') {
+      $str = ltrim(trim($str), "AND");
+    }
+
+
+
+    if ($_GET['q'] == 'searchimage') {
+      $search_array = $query->getSolrParams();
+      if (empty($str) && $_GET['keyword'] != '') {
+        $hash = array('bw8w8n', '5fyeg7', '2e1u4m', 'e49it8');
+        $hash_value = implode(' OR ', $hash);
+        $str = 'hash:(' . $hash_value . ')';
+      }
+      $query->replaceParam("fq", '(' . $str . ')');
+    }
+    else {
+
+      if (!empty($str)) {
+        $search_array = $query->getSolrParams();
+        $query->replaceParam("fq", '(' . $str . ')');
+      }
+    }
+     //pr($query->getSolrParams());
+  }
+}
+
+/**
+ * Implementation of hook_views_query_alter
+ * @param array reference $view
+ * @param array reference $query
+ */
+function itg_related_views_query_alter(&$view, &$query) {
+
+  if (isset($view->name) && $view->name == 'related_content_new') {
+    foreach ($view->exposed_raw_input['hash'] as $k => $v) {
+      if ($v == 0) {
+        unset($view->exposed_raw_input['hash'][$k]);
+      }
+    }
+  }
+}
+
+/**
+ * Implement itg_related_save_search
+ */
+function itg_related_save_search() {
+  global $user;
+  $save_search_result = db_select('itg_related_search', 'itgs')
+      ->fields('itgs')
+      ->condition('uid', $user->uid, '=')
+      ->orderBy('changed', 'DESC')//ORDER BY created
+      ->range(0, 5)
+      ->execute();
+  
+  $related_html = '';
+  $related_html.= '<ul class="search-list">';
+  while ($save_search_result_info = $save_search_result->fetchAssoc()) {
+
+    $final_link = str_replace("&width=900&height=700&iframe=true", "", $save_search_result_info['search_path']);
+    $related_html.= '<li><a oncontextmenu="return false;" href="' . $final_link . '&sname='.$save_search_result_info['search_title'].'&width=1000&height=700&iframe=true" class="colorbox-load">' . $save_search_result_info['search_title'] . '</a></li>';
+    
+  }
+
+  $related_html.= '</ul>';
+  
+  print $related_html;
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function itg_related_block_info() {
+  $blocks['related_form_block'] = array(
+    'info' => t('Related Form Block'),
+    'cache' => DRUPAL_CACHE_GLOBAL,
+  );
+
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view()
+ * @param string $delta
+ */
+function itg_related_block_view($delta = '') {
+  global $user;
+  $block = array();
+  $data = '';
+  switch ($delta) {
+    case 'related_form_block':
+      $block['content'] = theme('related_form_display_block', array('data' => $data));
+      break;
+  }
+
+  return $block;
+}
+
+/**
+ * Implements hook_theme().
+ * @param string $existing
+ * @param string $type
+ * @param string $theme
+ * @param string $path
+ */
+function itg_related_theme($existing, $type, $theme, $path) {
+  $themes = array(
+    'related_form_display_block' => array(
+      'template' => 'related-formtemplate',
+      'path' => drupal_get_path('module', 'itg_related') . '/templates',
+      'variables' => array('data' => NULL),
+    ),
+  );
+
+  return $themes;
+}
+
+/**
+ * Implements itg_get_tag()
+ * @param string $title
+ */
+function itg_get_tag($title) {
+
+  if (strlen(trim($title)) > 0) {
+    $vocab_id = arg(1);
+    $prefill_tag = explode(',', $title);
+    // Fetch last
+    $last_string = trim(array_pop($prefill_tag));
+    $options = array();
+    $title = strtolower(trim($title));
+    $query = db_select('taxonomy_term_data', 'tn');
+    $query->fields('tn', array('name', 'tid'));
+    $query->condition('name', '%' . $last_string . '%', 'LIKE');
+    $query->condition('vid', $vocab_id, '=');
+    $query->range(0, 20);
+
+    $result = $query->execute();
+    $prefix = count($prefill_tag) ? implode(', ', $prefill_tag) . ', ' : '';
+    while ($record = $result->fetchAssoc()) {
+      //$options[$prefix . $record['name'] . ':' . $record['tid']] = $record['name'];
+      $options[$prefix . $record['name']] = $record['name'];
+    }
+    drupal_json_output($options);
+  }
+}
+
+/**
+ * Implement itg_get_twitter_list
+ * @param string $name
+ */
+function itg_get_twitter_list($name) {
+  $term_array = taxonomy_get_term_by_name('reporter');
+  $term = reset($term_array); # get the first element of the array which is our term object
+
+  $reporter_name = db_select('node', 'n');
+  $reporter_name->join('field_data_field_celebrity_pro_occupation', 'rpn', 'n.nid = rpn.entity_id');
+  $reporter_name->join('field_data_field_reporter_twitter_handle', 'tw', 'n.nid = tw.entity_id');
+  $reporter_name->fields('tw', array('field_reporter_twitter_handle_value'));
+  $reporter_name->condition('field_celebrity_pro_occupation_tid', $term->tid, '=');
+  $reporter_name->condition('n.type', 'reporter', '=');
+  $reporter_name->condition('tw.field_reporter_twitter_handle_value', '%' . $name . '%', 'LIKE');
+  $result = $reporter_name->execute();
+
+  while ($record = $result->fetchAssoc()) {
+    $r_title = strtolower($record['field_reporter_twitter_handle_value']);
+    $options[$r_title] = $r_title;
+  }
+  drupal_json_output($options);
+}

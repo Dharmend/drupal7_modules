@@ -1,0 +1,820 @@
+<?php
+
+/**
+ * @file
+ * The ITG Users module.
+ * Provides Users functionality and customizations.
+ */
+
+/**
+ * Implement hook_user_presave
+ * @param array $edit
+ * @param array $account
+ * @param array $category
+ */
+function itg_users_user_presave(&$edit, $account, $category) {
+
+  if (!empty($edit['field_first_name'][LANGUAGE_NONE][0]['value'])) {
+    $edit['field_first_name'][LANGUAGE_NONE][0]['value'] = trim($edit['field_first_name'][LANGUAGE_NONE][0]['value'], '. ');
+  }
+  if (!empty($edit['field_last_name'][LANGUAGE_NONE][0]['value'])) {
+    $edit['field_last_name'][LANGUAGE_NONE][0]['value'] = trim($edit['field_last_name'][LANGUAGE_NONE][0]['value'], '. ');
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function itg_users_menu() {
+  $items['cms-user-dashboard'] = array(
+    'title' => 'Dashboard',
+    'page callback' => 'itg_users_cms_user_dashboard',
+    'access callback' => 'user_is_logged_in',
+    'type' => MENU_CALLBACK,
+    'file' => 'includes/itg_users.inc',
+  );
+
+//  $items['user-block'] = array(
+//    'title' => 'User Block',
+//    'page callback' => 'itg_users_block_user',
+//    'access callback' => TRUE,
+//    'type' => MENU_CALLBACK,
+//    'file' => 'includes/itg_users.inc',
+//  );
+
+  $items['access-denied'] = array(
+    'page callback' => 'itg_users_access_denied',
+    'access callback' => TRUE,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function itg_users_form_alter(&$form, &$form_state, $form_id) {  
+  global $user, $base_url;
+  //code for multidomain
+  if ($form_id == 'user_login') {    
+    $form['#validate'][] = 'itg_users_backend_validate';
+  }
+  
+  if ($form_id == 'user_register_form' || $form_id == 'user_profile_form') {
+    // hide subscribe checkbox from user page
+     if(!in_array(FRONT_USER, $user->roles)) {
+       $form['field_subscribe_for_newsletter']['#attributes']['class'][] = 'element-hidden';
+    }
+    // Sort roles in alphabetical order.
+    $edrole = $form['account']['roles']['#options'];
+    asort($edrole);
+    $form['account']['roles']['#options'] = $edrole;
+  }
+  if (isset($form['confirm']['#value'])) {
+    // hide remove button of first field on add form 
+    drupal_add_js('jQuery(document).ready(function() {
+              jQuery(".confirm-user").hide();              
+            });', array('type' => 'inline', 'scope' => 'footer'));
+  }
+
+  if ($form_id == "user_pass") {
+    drupal_add_js("jQuery('#edit-name').blur(function(){
+      jQuery('#user-pass .login-wrapper span.error').text('');
+      jQuery('#user-pass .login-wrapper span.error').text('Please enter Email Address.');
+      });", array('type' => 'inline', 'scope' => 'footer'));
+
+    drupal_add_js("jQuery('#edit-submit').on('click', function(){
+      setInterval(function() {
+      jQuery('#user-pass .login-wrapper span.error').text('');
+      jQuery('#user-pass .login-wrapper span.error').text('Please enter Email Address.');
+        }, 0.1);
+      });", array('type' => 'inline', 'scope' => 'footer'));
+  }
+  if ($form_id == 'user_profile_form') {
+    // access denied code for direct hit 
+    if (arg(0) == 'user' && is_numeric(arg(1)) && arg(2) == 'edit' && arg(1) != $user->uid) {
+      $arg = arg(1);
+      $user_child_roles = itg_users_role_delegation($user->roles);
+      $user_role = user_load($arg);
+      $user_intersec = array_intersect($user_role->roles, $user_child_roles);
+      if (empty($user_intersec) && (!in_array('administrator', $user->roles))) {
+        drupal_access_denied();
+        module_invoke_all('exit');
+        drupal_exit();
+      }
+//      else {
+//        return true;
+//      }
+    }
+    $form['field_notify_user_of_update_acco']['und']['#attributes'] = array('checked' => 'checked');
+    $form['account']['name']['#attributes']['disabled'] = 'disabled';
+    $form['account']['mail']['#attributes']['disabled'] = 'disabled';
+    $form['account']['mail']['#weight'] = '-6';
+    $form['#validate'][] = 'itg_users_validate_user_profile_validate';
+    $form['#after_build'][] = 'itg_users_after_user_profile_validate';
+
+    if (arg(0) == 'user' && is_numeric(arg(1)) && arg(2) == 'edit') {
+      $self_user = arg(1);
+      //$user_role = user_load($self_user);
+
+      if ($user->uid == arg(1)) {
+        unset($form['account']['status']);
+        unset($form['field_story_expiry_date']);
+        unset($form['field_notify_user_of_update_acco']);
+        unset($form['field_subscribe_for_newsletter']);
+      }
+    }
+
+    if (array_key_exists(SECTION_EDITOR_ANCHOR, $user->roles)) {
+      $user_array = array(COPY_EDITOR => COPY_EDITOR, SUBEDITOR_SR_SUB => SUBEDITOR_SR_SUB, INTERN => INTERN, AUTHOR_GUEST => AUTHOR_GUEST);
+      $user_id_log = $user->uid;
+      if (isset($user_array) && $user_id_log != arg(1)) {
+        unset($form['account']['pass']);
+      }
+    }
+    else if (array_key_exists(COPY_EDITOR, $user->roles)) {
+      $user_array = array(SUBEDITOR_SR_SUB => SUBEDITOR_SR_SUB, INTERN => INTERN, AUTHOR_GUEST => AUTHOR_GUEST);
+      $user_id_log = $user->uid;
+      if (isset($user_array) && $user_id_log != arg(1)) {
+        unset($form['account']['pass']);
+      }
+    }
+    else if (array_key_exists(SUBEDITOR_SR_SUB, $user->roles)) {
+      $user_array = array(INTERN => INTERN, AUTHOR_GUEST => AUTHOR_GUEST);
+      $user_id_log = $user->uid;
+      if (isset($user_array) && $user_id_log != arg(1)) {
+        unset($form['account']['pass']);
+      }
+    }
+  }
+
+  if ($form_id == 'user_register_form') {
+    $form['#validate'][] = 'itg_users_validate_user_register_validate';
+    $form['#after_build'][] = 'itg_users_after_user_register_validate';
+    $form['account']['status']['#access'] = FALSE;
+  }
+
+  if ($form_id == 'user_register_form' || $form_id == 'user_profile_form') {
+    $form['account']['status']['#options'][1] = 'Unblocked';
+    if (isset($_GET['destination'])) {
+      $_GET['destination'] = $_GET['destination'];
+    }
+    else {
+      $form['#action'] = '?destination=user/' . $user->uid;
+    }
+    if ($user->uid != 1) {
+      $form['#after_build'][] = 'itg_user_after_build';
+      $tax = taxonomy_get_tree(CATEGORY_MANAGMENT, $parent = 0, $max_depth = 1, $load_entities = FALSE);
+
+      foreach ($tax as $key => $val) {
+        $op[$val->tid] = $val->name;
+      }
+
+      // assign array value to taxonomy field
+      $form['field_user_section']['und']['#options'] = $op;
+
+      $user_role = itg_users_role_delegation($form['account']['roles']['#options']);
+
+      if (isset($user_role)) {
+        if ($form['#user']->uid != $user->uid) {
+          $form['selected'] = array(
+            '#type' => 'select',
+            '#title' => t('Select role'),
+            '#options' => $user_role,
+            '#default_value' => $form['account']['roles']['#default_value'][1],
+            '#required' => TRUE,
+          );
+        }
+      }
+
+      //Check to default when create new user 'Notify User of New Account' checkbox will be checked.
+      $form['account']['notify']['#default_value'] = TRUE;
+
+      // Add cancel button to user edit form and redirects to user manage page on click of cancel button.
+      $destination = 'user';
+      if (isset($_GET['destination'])) {
+        $destination = 'manage-users';
+      }
+      else {
+        $destination = 'user/' . $user->uid;
+      }
+      $form['actions']['cancel'] = array(
+        '#markup' => l(t('Cancel'), $destination, array('attributes' => array('class' => 'button'))),
+        '#weight' => 20,
+        '#value' => t('Cancel'),
+      );
+    }
+  }
+}
+
+/**
+ * Password validation for adding user profile
+ * @param array $form
+ * @param array $form_state
+ */
+function itg_users_validate_user_register_validate(&$form, &$form_state) {
+  if ($form_state['values']['pass']) {
+    if (!preg_match('/^(?=.*[A-Za-z])[A-Za-z0-9!@#$%]{8,}$/', $form_state['values']['pass'])) {
+      form_set_error('pass', t('Password must be minimum 8 digit alphanumeric and without space.'));
+    }
+  }
+  if ($form_state['values']['mail']) {
+    $user_email = substr($form_state['values']['mail'], strpos($form_state['values']['mail'], "@") + 1);
+    $user_email_count = substr_count($user_email, '.');
+    if ($user_email_count > 2) {
+      form_set_error('mail', t('Please enter valid email address.'));
+    }
+  }
+  $first_name = trim($form_state['values']['field_first_name'][LANGUAGE_NONE][0]['value']);
+  if ($first_name) {
+    if (!preg_match("/^[a-zA-Z. ]*$/", $first_name)) {
+      form_set_error('field_first_name', t('Please enter only letters, dot and white space allowed.'));
+    }
+  }
+  $last_name = trim($form_state['values']['field_last_name'][LANGUAGE_NONE][0]['value']);
+  if ($last_name) {
+    if (!preg_match("/^[a-zA-Z. ]*$/", $last_name)) {
+      form_set_error('field_last_name', t('Please enter only letters, dot and white space allowed.'));
+    }
+  }
+  // get section value
+  $section = $form_state['values']['field_user_section'][LANGUAGE_NONE];
+  if ($form_state['values']['selected'] == EXPERT) {
+    if (empty($section[0]['tid'])) {
+      form_set_error('field_user_section', t("Section Field is required!"));
+    }
+  }
+
+  if ($form_state['values']['selected'] == COPY_EDITOR || $form_state['values']['selected'] == SECTION_EDITOR_ANCHOR || $form_state['values']['selected'] == EDITOR) {
+    $mark_expert = $form_state['values']['field_mark_as_expert'][LANGUAGE_NONE][0]['value'];
+
+//    if (empty($mark_expert)) {
+//      form_set_error('field_mark_as_expert', t("Mark as Expert Field is required!"));
+//    }
+
+    if (!empty($mark_expert) && empty($section[0]['tid'])) {
+      form_set_error('field_user_section', t("Section Field is required!"));
+    }
+  }
+}
+
+/**
+ * Password validation for minimum or maximum 8 char 
+ * @param array $form
+ * @param array $form_state
+ */
+function itg_users_after_user_register_validate(&$form, &$form_state) {
+  global $user, $base_url;
+  $form['account']['pass']['#attached']['js'][1]['data']['password']['tooShort'] = t('Make it at least 8 characters');
+  $form['account']['mail']['#description'] = t('Please provide a valid format ex:(username@domainname.co.in, username@domainname.in, username@domainname.com.in, username@domainname.com)');
+  $settings = array();
+  $settings['base_url'] = $base_url;
+  $settings['uid'] = $user->uid;
+  drupal_add_js(array('itg_users' => array('settings' => $settings)), array('type' => 'setting'));
+  $form['#attached']['js'] = array(drupal_get_path('module', 'itg_users') . '/js/itg_users.js',);
+  return $form;
+}
+
+/**
+ * Password validation for editing user profile
+ * @param array $form
+ * @param array $form_state
+ * 
+ */
+function itg_users_validate_user_profile_validate(&$form, &$form_state) {
+  if ($form_state['values']['pass']) {
+    if (!preg_match('/^(?=.*[A-Za-z])[A-Za-z0-9!@#$%]{8,}$/', $form_state['values']['pass'])) {
+      form_set_error('pass', t('Password must be minimum 8 digit alphanumeric and without space.'));
+    }
+  }
+  if ($form_state['values']['mail']) {
+    $user_email = substr($form_state['values']['mail'], strpos($form_state['values']['mail'], "@") + 1);
+    $user_email_count = substr_count($user_email, '.');
+    if ($user_email_count > 2) {
+      form_set_error('mail', t('Please enter valid email address.'));
+    }
+  }
+  $first_names = trim($form_state['values']['field_first_name'][LANGUAGE_NONE][0]['value']);
+  if (trim($first_names)) {
+    if (!preg_match("/^[a-zA-Z. ]*$/", $first_names)) {
+      form_set_error('field_first_name', t('Please enter only letters, dot and white space allowed.'));
+    }
+  }
+  $last_names = trim($form_state['values']['field_last_name'][LANGUAGE_NONE][0]['value']);
+  if (trim($last_names)) {
+    if (!preg_match("/^[a-zA-Z. ]*$/", $last_names)) {
+      form_set_error('field_last_name', t('Please enter only letters, dot and white space allowed.'));
+    }
+  }
+  // get section value
+  $section = $form_state['values']['field_user_section'][LANGUAGE_NONE];
+
+  if ($form_state['values']['selected'] == EXPERT) {
+    if (empty($section[0]['tid'])) {
+      form_set_error('field_user_section', t("Section Field is required!"));
+    }
+  }
+
+  if ($form_state['values']['selected'] == COPY_EDITOR || $form_state['values']['selected'] == SECTION_EDITOR_ANCHOR || $form_state['values']['selected'] == EDITOR || $form_state['values']['selected'] == SITE_ADMIN) {
+    $mark_expert = $form_state['values']['field_mark_as_expert'][LANGUAGE_NONE][0]['value'];
+
+//    if (empty($mark_expert)) {
+//      form_set_error('field_mark_as_expert', t("Mark as Expert Field is required!"));
+//    }
+
+    if (!empty($mark_expert) && empty($section[0]['tid'])) {
+      form_set_error('field_user_section', t("Section Field is required!"));
+    }
+  }
+}
+
+/**
+ * Password validation for minimum or maximum 8 char 
+ * @param array $form
+ * @param array $form_state 
+ */
+function itg_users_after_user_profile_validate(&$form, &$form_state) {
+  global $user, $base_url;
+  $form['account']['pass']['#attached']['js'][1]['data']['password']['tooShort'] = t('Make it at least 8 characters');
+  $form['account']['mail']['#description'] = t('Please provide a valid format ex:(username@domainname.co.in, username@domainname.in, username@domainname.com.in, username@domainname.com)');
+  $settings = array();
+  $settings['base_url'] = $base_url;
+  $settings['uid'] = $user->uid;
+  drupal_add_js(array('itg_users' => array('settings' => $settings)), array('type' => 'setting'));
+  $form['#attached']['js'] = array(drupal_get_path('module', 'itg_users') . '/js/itg_users.js',);
+  return $form;
+}
+
+/**
+ * Implements views header link 
+ *
+ */
+function itg_users_views_pre_render(&$view) {
+  if ($view->name == "manage_users") {
+    global $user; // Get user information
+
+    $header_content = '';
+    if (!in_array('Intern', $user->roles) && !in_array('Author/Guest', $user->roles)) {
+      $header_content = '<span class="count">Count (' . $view->total_rows . ') </span>';
+      $header_content .= l(t('Create User'), 'admin/people/create', array('query' => array('destination' => 'manage-users'), 'attributes' => array('class' => 'confirm-user')));
+    }
+
+    $view->attachment_before = $header_content;
+  }
+}
+
+/**
+ * Implements hook_user_logout
+ *
+ */
+function itg_users_user_logout($account) {
+
+  $_GET['destination'] = 'user';
+}
+
+/*
+ * Implements itg_users_role_delegation
+ */
+
+function itg_users_role_delegation($role_array) {
+  global $user;
+
+  if (array_key_exists(EDITOR, $user->roles)) {
+    $user_array = array(AUTHOR_GUEST => 'Author/Guest', COPY_EDITOR => 'Copy Editor', INTERN => 'Intern', SECTION_EDITOR_ANCHOR => 'Section Editor/Anchor', SUBEDITOR_SR_SUB => 'Subeditor/Sr.Sub', CO_ORDINATOR => 'Co-ordinator', COPY_DESK => 'Copy Desk', CORRESPONDENT=>'Correspondent', DESIGN_HEAD=>'Design Head', DESIGNER => 'Designer');
+  }
+  else if (array_key_exists(SECTION_EDITOR_ANCHOR, $user->roles)) {
+    $user_array = array(AUTHOR_GUEST => 'Author/Guest', COPY_EDITOR => 'Copy Editor', INTERN => 'Intern', SUBEDITOR_SR_SUB => 'Subeditor/Sr.Sub');
+  }
+  else if (array_key_exists(COPY_EDITOR, $user->roles)) {
+    $user_array = array(AUTHOR_GUEST => 'Author/Guest', INTERN => 'Intern', SUBEDITOR_SR_SUB => 'Subeditor/Sr.Sub');
+  }
+  else if (array_key_exists(SUBEDITOR_SR_SUB, $user->roles)) {
+    $user_array = array(AUTHOR_GUEST => 'Author/Guest', INTERN => 'Intern');
+  }
+  else if (array_key_exists(SITE_ADMIN, $user->roles)) {
+    unset($role_array[3]);
+    $user_array = $role_array;
+  }
+  else if (array_key_exists(ADMINISTRATOR, $user->roles)) {
+    $user_array = $role_array;
+  }
+
+  return $user_array;
+}
+
+/*
+ * Function return desendent role at add user page 
+ */
+
+function itg_users_role_delegation_uid() {
+  global $user;
+
+  if (array_key_exists(EDITOR, $user->roles)) {
+    $user_array = array(SECTION_EDITOR_ANCHOR => SECTION_EDITOR_ANCHOR, COPY_EDITOR => COPY_EDITOR, SUBEDITOR_SR_SUB => SUBEDITOR_SR_SUB, INTERN => INTERN, AUTHOR_GUEST => AUTHOR_GUEST, CO_ORDINATOR => CO_ORDINATOR, COPY_DESK => COPY_DESK, CORRESPONDENT => CORRESPONDENT, DESIGN_HEAD => DESIGN_HEAD, DESIGNER => DESIGNER);
+  }
+  else if (array_key_exists(SECTION_EDITOR_ANCHOR, $user->roles)) {
+    $user_array = array(COPY_EDITOR => COPY_EDITOR, SUBEDITOR_SR_SUB => SUBEDITOR_SR_SUB, INTERN => INTERN, AUTHOR_GUEST => AUTHOR_GUEST);
+  }
+  else if (array_key_exists(COPY_EDITOR, $user->roles)) {
+    $user_array = array(SUBEDITOR_SR_SUB => SUBEDITOR_SR_SUB, INTERN => INTERN, AUTHOR_GUEST => AUTHOR_GUEST);
+  }
+  else if (array_key_exists(SUBEDITOR_SR_SUB, $user->roles)) {
+    $user_array = array(INTERN => INTERN, AUTHOR_GUEST => AUTHOR_GUEST);
+  }
+
+  return $user_array;
+}
+
+/*
+ * after build for user management form
+ */
+
+function itg_user_after_build($form, &$form_state) {
+  drupal_add_js(drupal_get_path('module', 'itg_users') . '/js/itg_users.js', array('weight' => 1));
+  return $form;
+}
+
+/*
+ * Blocked and unblocked option for status filter in manage user view
+ */
+
+function itg_users_form_views_exposed_form_alter(&$form, &$form_state, $form_id) {
+  if (($form['#id'] == 'views-exposed-form-manage-users-page')) {
+    // sorting of roles in user management filter
+    unset($form['rid']['#options'][3]);
+    $rol = $form['rid']['#options'];
+    asort($rol);
+    $form['rid']['#options'] = $rol;
+    // Change status value in user management views filter
+    $form['status']['#options'][1] = t('Unblocked');
+    $form['status']['#options'][0] = t('Blocked');
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function itg_users_theme($existing, $type, $theme, $path) {
+  $themes = array(
+    'cms_user_dashboard' => array(
+      'template' => 'cms-user-dashboard',
+      'path' => drupal_get_path('module', 'itg_users') . '/templates',
+      'variables' => array('data' => NULL),
+    ),
+  );
+
+  return $themes;
+}
+
+/**
+ * Implement hook_user_login
+ * @param Array $edit
+ * @param Object $account
+ */
+function itg_users_user_login(&$edit, $account) {
+  $role_count = count($account->roles);
+
+  if (isset($_GET['destination'])) {
+    unset($_GET['destination']);
+  }
+  if (!array_key_exists(ADMINISTRATOR, $account->roles) && !array_key_exists(FRONT_USER, $account->roles)) {
+    if (!isset($_GET['destination']) && arg(1) != "reset") {
+      $_GET['destination'] = 'cms-user-dashboard'; // Redirect user to dashboard page after login
+    }
+  }
+//  if (array_key_exists(FRONT_USER, $account->roles)) {
+//    $_GET['destination'] = 'personalization/saved-items';
+//    
+//  }
+  if ($role_count < 3) {
+    if (array_key_exists(EXPERT, $account->roles)) {
+      if (arg(1) != "reset") {
+        $_GET['destination'] = 'ask-an-expert';
+      }
+    }
+  }
+  
+  
+  if ($role_count < 3) {
+    if (array_key_exists(CORRESPONDENT, $account->roles)) {
+      if (arg(1) != "reset") {
+        $_GET['destination'] = 'manage-print-team-not-decided';
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_token_info().
+ */
+function itg_users_token_info() {
+  $info['tokens']['user']['password'] = array(
+    'name' => t('Password'),
+    'description' => t('The password by the user'),
+  );
+  return $info;
+}
+
+/**
+ * Implements hook_tokens().
+ */
+function itg_users_tokens($type, $tokens, array $data = array(), array $options = array()) {
+  $replacements = array();
+
+  $url_options = array('absolute' => TRUE);
+  if (isset($options['language'])) {
+    $url_options['language'] = $options['language'];
+  }
+
+  if ($type == 'user' && !empty($data['user'])) {
+    $account = $data['user'];
+
+    foreach ($tokens as $name => $original) {
+      switch ($name) {
+        case 'password':
+          $replacements[$original] = $account->password;
+          break;
+      }
+    }
+  }
+
+  return $replacements;
+}
+
+/**
+ * Implements hook_user_update().
+ * @param type $edit
+ * @param type $account
+ * @param type $category
+ */
+function itg_users_user_update(&$edit, $account, $category) {
+
+  // send mail when password is changed
+  if (!empty($account->field_notify_user_of_update_acco[LANGUAGE_NONE][0]['value']) && $account->field_notify_user_of_update_acco[LANGUAGE_NONE][0]['value'] == '1') {
+    if (!empty($edit['pass'])) {
+      $role = 'Your Password has been updated';
+      $mail_content = itg_users_get_mail_content($role);
+      $params = array(
+        'body' => $mail_content,
+        'subject' => 'India Today | Password Updated!',
+      );
+
+      $to = $account->mail;
+
+      $mail = drupal_mail('itg_users', 'send_password_mail_to_user', $to, language_default(), $params, 'no-reply@indiatoday.com', TRUE);
+      if ($mail['result']) {
+        return TRUE;
+      }
+      else {
+        $error_msg = 'Failed to send the email!';
+        watchdog('canvas-email', $error_msg, array(), WATCHDOG_ALERT);
+        return FALSE;
+      }
+    }
+  }
+
+  // send mail whe role is changed
+  if (!empty($account->field_notify_user_of_update_acco[LANGUAGE_NONE][0]['value']) && $account->field_notify_user_of_update_acco[LANGUAGE_NONE][0]['value'] == '1') {
+
+    $user_intersec = array_diff_key($account->roles, $account->original->roles);
+
+    foreach ($account->roles as $key => $value) {
+      $rol_name[] = itg_users_role_name($value);
+    }
+
+    $role_comma_value = implode(',', $rol_name);
+    $role_comma_value = rtrim($role_comma_value, ',');
+
+    $role = 'Your Role has been changed to ' . $role_comma_value;
+    if ($user_intersec) {
+      $mail_content = itg_users_get_mail_content($role);
+      $params = array(
+        'body' => $mail_content,
+        'subject' => 'India Today | Role Updated!',
+      );
+
+      $to = $account->mail;
+
+      $mail = drupal_mail('itg_users', 'send_role_mail_to_user', $to, language_default(), $params, 'no-reply@indiatoday.com', TRUE);
+      if ($mail['result']) {
+        return TRUE;
+      }
+      else {
+        $error_msg = 'Failed to send the email!';
+        watchdog('canvas-email', $error_msg, array(), WATCHDOG_ALERT);
+        return FALSE;
+      }
+    }
+  }
+
+  // send mail when user select notification chekbox
+  if (!empty($account->field_subscribe_for_newsletter[LANGUAGE_NONE][0]['value']) && $account->field_subscribe_for_newsletter[LANGUAGE_NONE][0]['value'] == '1') {
+
+    $news_info = 'You have sucessfully subscribed for India Today newsletters.';
+    $mail_content = itg_users_get_mail_content($news_info);
+    $params = array(
+      'body' => $mail_content,
+      'subject' => 'India Today | Newsletter Subscription!',
+    );
+
+    $to = $account->mail;
+
+    $mail = drupal_mail('itg_users', 'send_subscribe_mail_to_user', $to, language_default(), $params, 'no-reply@indiatoday.com', TRUE);
+    if ($mail['result']) {
+      return TRUE;
+    }
+    else {
+      $error_msg = 'Failed to send the email!';
+      watchdog('canvas-email', $error_msg, array(), WATCHDOG_ALERT);
+      return FALSE;
+    }
+  }
+}
+
+/**
+ * Implements hook_node_insert
+ * @param type $edit
+ * @param type $account
+ * @param type $category
+ */
+function itg_users_user_insert(&$edit, $account, $category) {
+  if ($account->field_subscribe_for_newsletter[LANGUAGE_NONE][0]['value'] == '1') {
+    $news_info = 'You have sucessfully subscribed for India Today newsletters.';
+    $mail_content = itg_users_get_mail_content($news_info);
+    $params = array(
+      'body' => $mail_content,
+      'subject' => 'India Today | Newsletter Subscription!',
+    );
+
+    $to = $account->mail;
+
+    $mail = drupal_mail('itg_users', 'send_subscribe_mail_to_user', $to, language_default(), $params, 'no-reply@indiatoday.com', TRUE);
+    if ($mail['result']) {
+      return TRUE;
+    }
+    else {
+      $error_msg = 'Failed to send the email!';
+      watchdog('canvas-email', $error_msg, array(), WATCHDOG_ALERT);
+      return FALSE;
+    }
+  }
+}
+
+/**
+ * Send mail to user, when role/password is update
+ * @global String $base_url
+ * @param String $key
+ * @param String $message
+ * @param Array $entity
+ */
+function itg_users_mail($key, &$message, $params) {
+  switch ($key) {
+    case 'send_role_mail_to_user':
+      $headers = array(
+        'MIME-Version' => '1.0',
+        'Content-Type' => 'text/plain; charset=UTF-8; format=flowed; delsp=yes',
+        'Content-Transfer-Encoding' => '8Bit',
+        'X-Mailer' => 'Drupal'
+      );
+      $message['subject'] = $params['subject'];
+      $message['body'][] = $params['body'];
+      foreach ($headers as $key => $value) {
+        $message['headers'][$key] = $value;
+      }
+      break;
+
+    case 'send_subscribe_mail_to_user':
+      $headers = array(
+        'MIME-Version' => '1.0',
+        'Content-Type' => 'text/plain; charset=UTF-8; format=flowed; delsp=yes',
+        'Content-Transfer-Encoding' => '8Bit',
+        'X-Mailer' => 'Drupal'
+      );
+      $message['subject'] = $params['subject'];
+      $message['body'][] = $params['body'];
+      foreach ($headers as $key => $value) {
+        $message['headers'][$key] = $value;
+      }
+      break;
+
+    case 'send_password_mail_to_user':
+      $headers = array(
+        'MIME-Version' => '1.0',
+        'Content-Type' => 'text/plain; charset=UTF-8; format=flowed; delsp=yes',
+        'Content-Transfer-Encoding' => '8Bit',
+        'X-Mailer' => 'Drupal'
+      );
+      $message['subject'] = $params['subject'];
+      $message['body'][] = $params['body'];
+      foreach ($headers as $key => $value) {
+        $message['headers'][$key] = $value;
+      }
+      break;
+  }
+}
+
+/**
+ * Get Mail content
+ * @global String $base_url
+ * @param Array $node
+ * @return string
+ */
+function itg_users_get_mail_content($role) {
+
+  global $base_url;
+
+  $content = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"> 
+<html xmlns:v="urn:schemas-microsoft-com:vml">
+<head>
+    <title></title>
+</head>
+<body style="margin:0; padding:0;">
+      <table cellpadding="0" cellspacing="0" width="760" align="center">
+      <tr><td></td></tr>
+      <tr><td>Dear user,</td></tr>
+      <tr><td></td></tr>
+      <tr><td>' . $role . '</td></tr>
+      <tr><td></td></tr>
+      <tr><td>Thanks,</td></tr>
+      <tr><td>India Today Team</td></tr></table>
+</body></html>';
+
+  return $content;
+}
+
+/**
+ * Get last node published by user
+ * @param type $rid
+ */
+function itg_users_role_name($rid) {
+  $role_result = db_select('role', 'r')
+      ->fields('r')
+      ->condition('rid', $rid)
+      ->condition('rid', 1, '!=')
+      ->execute()
+      ->fetchAssoc();
+
+  return $role_result['name'];
+}
+
+/**
+ * Page callback for the access denied page. Does a redirect to login page (Taken from r4032login.module)
+ */
+function itg_users_access_denied() {
+  global $user;
+  if ($user->uid) {
+    return MENU_ACCESS_DENIED;
+  }
+
+  // The code in drupal_get_destination() doesn't preserve any query string
+  // on 403 pages, so reproduce the part we want here.
+  $path = $_GET['destination'];
+  $query = drupal_http_build_query(drupal_get_query_parameters(NULL, array('q', 'destination')));
+  if ($query != '') {
+    $path .= '?' . $query;
+  }
+  $destination = array('destination' => $path);
+  header('Location: ' . url('user/login', array('query' => $destination, 'absolute' => TRUE)), TRUE, 302);
+  drupal_exit();
+}
+
+/**
+ * Implements hook_js_alter().
+ * {@inheritdoc}
+ */
+function itg_users_js_alter(&$javascript) {
+  $javascript['modules/user/user.js']['data'] = drupal_get_path('module', 'itg_users') . '/js/custom_user.js';
+}
+
+/**
+ * Implements hook_cronapi().
+ * {@inheritdoc}
+ */
+function itg_users_cronapi($op, $job = NULL) {
+  $items['itg-user-block'] = array(
+    'description' => 'user expired by cron.',
+    'callback' => 'itg_users_block_user',
+    'file' => 'includes/itg_users.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * user validation for backend
+ * @param array $form
+ * @param array $form_state
+ * 
+ */
+function itg_users_backend_validate(&$form, &$form_state) {
+  global $base_url;
+  
+  $user_info = user_load_by_name($form_state['values']['name']);
+ 
+  if (array_key_exists(FRONT_USER, $user_info->roles) && $base_url == BACKEND_URL) {
+     form_set_error('name', t('User does not exist!'));
+  } else if (!array_key_exists(FRONT_USER, $user_info->roles) && $base_url == FRONT_URL) {    
+      form_set_error('name', t('User does not exist!'));
+  }
+ 
+}
